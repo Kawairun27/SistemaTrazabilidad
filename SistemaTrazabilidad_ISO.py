@@ -1,21 +1,33 @@
 import streamlit as st
-import os 
+import os
+import hashlib
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime, timedelta
+from datetime import datetime
 from fpdf import FPDF
 from PIL import Image
 
-# --- CONFIGURACIÓN DE BASE DE DATOS ---
+# --- CONFIGURACIÓN DE PÁGINA (DEBE SER LO PRIMERO) ---
+st.set_page_config(page_title="TechArmor RD - Sistema Integrado", layout="wide")
+
+# --- DB SETUP ---
 engine = create_engine('sqlite:///trazabilidad_v2.db')
 Base = declarative_base()
+
+class Usuario(Base):
+    __tablename__ = 'usuarios'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String, unique=True)
+    password = Column(String)
+    nombre = Column(String)
 
 class Pedido(Base):
     __tablename__ = 'pedidos'
     id = Column(Integer, primary_key=True, autoincrement=True)
     fecha = Column(DateTime, default=datetime.now)
     usuario_id = Column(Integer)
+
 class Unidad(Base):
     __tablename__ = 'unidades'
     codigo_xz = Column(String, primary_key=True)
@@ -28,158 +40,144 @@ Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 session = Session()
 
-# --- Función PDF Actualizada ---
+# --- FUNCIONES DE APOYO ---
+def hash_password(password):
+    return hashlib.sha256(str.encode(password)).hexdigest()
+
 def crear_pdf_cotizacion(codigo, producto, num_orden):
     pdf = FPDF()
     pdf.add_page()
-    
-    # Datos técnicos mapeados con extensiones corregidas
     INFO = {
-        "Apex-15 Stealth": {"specs": "i7-13700H, RTX 4070, 16GB RAM", "tiempo": "5 días", "img": "images/Apex-15Stealth.webp.webp"},
-        "Titan-18 Ultra": {"specs": "i9-14900HX, RTX 4090, 32GB RAM", "tiempo": "7 días", "img": "images/Titan18Ultra.webp.webp"},
-        "Horizon-G Pro": {"specs": "Ryzen 9, RTX 4080, Liquid Cooling", "tiempo": "6 días", "img": "images/HorizonG-pro.jpg"},
-        "Workstation-X": {"specs": "Xeon Gold, 64GB ECC, Quadro RTX", "tiempo": "8 días", "img": "images/WorkstationX.jpg"},
-        "GPU-Vortex 90": {"specs": "24GB GDDR6X, Triple Fan, DLSS 3.5", "tiempo": "3 días", "img": "images/GpuVortex.webp.webp"},
-        "RAM-Fury 64GB": {"specs": "DDR5 6000MHz, CL30, RGB", "tiempo": "2 días", "img": "images/RAM-Fury-64gb.jpg"}
+        "Apex-15 Stealth": {"specs": "i7-13700H, RTX 4070, 16GB RAM", "tiempo": "5 días", "img": "images/Apex-15Stealth.webp"},
+        "Titan-18 Ultra": {"specs": "i9-14900HX, RTX 4090, 32GB RAM", "tiempo": "7 días", "img": "images/Titan18Ultra.webp"},
+        "Horizon-G Pro": {"specs": "Ryzen 9, RTX 4080, Liquid Cooling", "tiempo": "6 días", "img": "images/HorizonG-pro.webp"},
+        "Workstation-X": {"specs": "Xeon Gold, 64GB ECC, Quadro RTX", "tiempo": "8 días", "img": "images/WorkstationX.png"},
+        "GPU-Vortex 90": {"specs": "24GB GDDR6X, Triple Fan, DLSS 3.5", "tiempo": "3 días", "img": "images/GpuVortex.webp"},
+        "RAM-Fury 64GB": {"specs": "DDR5 6000MHz, CL30, RGB", "tiempo": "2 días", "img": "images/RAM-Fury-64gb.webp"}
     }
-
-    # Encabezado Corporativo
     pdf.set_font("Arial", 'B', 20)
     pdf.set_text_color(40, 70, 120)
     pdf.cell(200, 15, txt="TECHARMOR RD - HOJA DE TRAZABILIDAD", ln=True, align='C')
-    
     pdf.set_font("Arial", 'B', 12)
     pdf.set_text_color(0, 0, 0)
     pdf.cell(200, 10, txt=f"ORDEN DE PRODUCCIÓN: #{num_orden:03d} | ID: {codigo}", ln=True, align='C')
     pdf.ln(5)
-
-    # Bloque de Información
     pdf.set_font("Arial", size=11)
     pdf.cell(100, 10, txt=f"Modelo: {producto}", ln=True)
-    
     if producto in INFO:
         pdf.multi_cell(0, 10, txt=f"Especificaciones Técnicas: {INFO[producto]['specs']}")
         pdf.cell(100, 10, txt=f"Tiempo Estándar de Entrega: {INFO[producto]['tiempo']}", ln=True)
         pdf.ln(5)
-        
-        # --- LÓGICA PARA IMÁGENES WEBP ---
         ruta_img = INFO[producto]['img']
         if os.path.exists(ruta_img):
             if ruta_img.lower().endswith(".webp"):
-                # Si es webp, lo convertimos a un formato temporal que FPDF acepte
                 img_temp = Image.open(ruta_img).convert("RGB")
                 img_temp_path = ruta_img.replace(".webp", "_temp.jpg")
                 img_temp.save(img_temp_path, "JPEG")
-                
                 pdf.image(img_temp_path, x=55, y=pdf.get_y(), w=100)
-                
-                # Opcional: Borrar el temporal después de usarlo (puedes comentarlo si falla)
-                os.remove(img_temp_path) 
+                os.remove(img_temp_path)
             else:
-                # Si ya es .jpg o .png, se inserta normal
                 pdf.image(ruta_img, x=55, y=pdf.get_y(), w=100)
-    
-    # Pie de página Normativo
     pdf.set_y(-40)
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, txt="Documento generado bajo estándares de Normalización ISO 9001:2015 - Grupo I", align='C', ln=True)
-    pdf.cell(0, 10, txt="La manipulación de este equipo debe seguir los protocolos de Metrología establecidos.", align='C')
-
     nombre_archivo = f"HojaTecnica_{codigo}.pdf"
     pdf.output(nombre_archivo)
     return nombre_archivo
 
-# --- INTERFAZ PRODUCCIÓN ---
-st.set_page_config(page_title="Panel de Producción ISO", layout="wide")
-st.title("🏭 Departamento de Producción (Trazabilidad)")
+# --- LÓGICA DE NAVEGACIÓN SECRETA ---
+query_params = st.query_params
+es_admin = query_params.get("acceso") == "root"
 
-# --- SECCIÓN DE CONTADORES Y PRIORIDADES ---
-st.subheader("📊 Indicadores de Prioridad (KPIs)")
-
-# Obtenemos unidades que no han sido despachadas
-pendientes = session.query(Unidad).filter(Unidad.etapa != "Despacho").all()
-total_pendientes = len(pendientes)
-
-col_met1, col_met2, col_met3 = st.columns(3)
-
-with col_met1:
-    st.metric("Órdenes en curso", total_pendientes)
-
-# Análisis jerárquico de prioridad
-unidades_con_fecha = []
-for u in pendientes:
-    # Buscamos la fecha del pedido original
-    pedido = session.query(Pedido).filter(Pedido.id == u.pedido_id).first()
-    if pedido:
-        dias_transcurridos = (datetime.now() - pedido.fecha).days
-        # Unidades con más de 3 días son "Prioridad Media", más de 5 es "CRÍTICO"
-        prioridad = "Baja"
-        if dias_transcurridos >= 5: prioridad = "🔥 CRÍTICO"
-        elif dias_transcurridos >= 3: prioridad = "⚠️ MEDIA"
-        
-        unidades_con_fecha.append({
-            "obj": u,
-            "dias": dias_transcurridos,
-            "prioridad": prioridad
-        })
-
-# Ordenar jerárquicamente: primero los que tienen más días transcurridos
-unidades_con_fecha = sorted(unidades_con_fecha, key=lambda x: x['dias'], reverse=True)
-
-with col_met2:
-    criticos = [x for x in unidades_con_fecha if x['dias'] >= 5]
-    st.metric("Órdenes Críticas (>5 días)", len(criticos), delta_color="inverse")
-
-with col_met3:
-    if unidades_con_fecha:
-        mas_antigua = unidades_con_fecha[0]['obj'].codigo_xz
-        st.write(f"🚩 **Atender primero:**")
-        st.error(f"{mas_antigua} ({unidades_con_fecha[0]['dias']} días)")
-
-st.divider()
-
-# --- CUERPO PRINCIPAL ---
-st.subheader("🛠️ Línea de Producción")
-
-if not unidades_con_fecha:
-    # Si no hay pendientes, mostramos las terminadas por si acaso
-    st.info("No hay órdenes pendientes. ¡Buen trabajo!")
-    unidades_para_mostrar = session.query(Unidad).order_by(Unidad.pedido_id.desc()).all()
+if es_admin:
+    menu = st.sidebar.selectbox("🛡️ MODO ADMINISTRADOR", ["🏭 Producción ISO", "🛒 Vista Tienda"])
 else:
-    # Mostramos las pendientes ordenadas por prioridad (la más vieja arriba)
-    unidades_para_mostrar = [x['obj'] for x in unidades_con_fecha]
+    menu = "🛒 Vista Tienda"
 
-for u in unidades_para_mostrar:
-    # Buscar info extra para el expander
-    info_prio = next((item for item in unidades_con_fecha if item["obj"].codigo_xz == u.codigo_xz), None)
-    label_prio = f" | PRIORIDAD: {info_prio['prioridad']}" if info_prio else " | ✅ COMPLETADO"
+# --- BLOQUE TIENDA ---
+if menu == "🛒 Vista Tienda":
+    if 'logged_in' not in st.session_state: st.session_state.logged_in = False
+    if 'carrito' not in st.session_state: st.session_state.carrito = []
+
+    with st.sidebar:
+        st.title("👤 Mi Cuenta")
+        if not st.session_state.logged_in:
+            with st.expander("📝 Registrarse"):
+                with st.form("reg"):
+                    n_nom, n_em, n_pw = st.text_input("Nombre"), st.text_input("Email"), st.text_input("Clave", type="password")
+                    if st.form_submit_button("Crear Cuenta"):
+                        try:
+                            session.add(Usuario(nombre=n_nom, email=n_em, password=hash_password(n_pw)))
+                            session.commit(); st.success("¡Listo!")
+                        except: st.error("Error")
+        else:
+            st.success(f"Hola, {st.session_state.user_email}")
+            if st.button("Cerrar Sesión"):
+                st.session_state.logged_in = False; st.rerun()
+
+    st.title("🛡️ TechArmor Premium Systems")
+    tab1, tab2 = st.tabs(["🛒 Catálogo", "🔍 Mis Órdenes"])
+
+    with tab1:
+        PRODUCTOS_INFO = {
+            "Apex-15 Stealth": {"img": "images/Apex-15Stealth.webp", "precio": 85900},
+            "Titan-18 Ultra": {"img": "images/Titan18Ultra.webp", "precio": 145000},
+            "Horizon-G Pro": {"img": "images/HorizonG-pro.webp", "precio": 95000},
+            "Workstation-X": {"img": "images/WorkstationX.png", "precio": 110000},
+            "GPU-Vortex 90": {"img": "images/GpuVortex.webp", "precio": 62500},
+            "RAM-Fury 64GB": {"img": "images/RAM-Fury-64gb.webp", "precio": 18200}
+        }
+        col_p, col_c = st.columns([3, 1])
+        with col_p:
+            p_items = list(PRODUCTOS_INFO.items())
+            for i in range(0, len(p_items), 2):
+                cols = st.columns(2)
+                for j in range(2):
+                    if i+j < len(p_items):
+                        name, info = p_items[i+j]
+                        with cols[j]:
+                            if os.path.exists(info["img"]): st.image(info["img"], use_container_width=True)
+                            st.subheader(name)
+                            if st.button(f"Añadir RD${info['precio']:,}", key=f"b_{name}"):
+                                st.session_state.carrito.append(name); st.toast(f"✅ {name}")
+        with col_c:
+            st.subheader("Carrito")
+            for item in st.session_state.carrito: st.write(f"- {item}")
+            if st.session_state.carrito and st.button("🚀 Pagar ahora"):
+                if not st.session_state.logged_in: st.warning("Inicia sesión primero")
+                else:
+                    ped = Pedido(usuario_id=st.session_state.user_id)
+                    session.add(ped); session.commit()
+                    for p in st.session_state.carrito:
+                        id_u = f"XZ-{p[:2].upper()}-{datetime.now().strftime('%M%S')}"
+                        session.add(Unidad(codigo_xz=id_u, modelo=p, etapa="Recibido", pedido_id=ped.id))
+                    session.commit(); st.session_state.carrito = []; st.success("¡Éxito!"); st.balloons()
+
+    with tab2:
+        if st.session_state.logged_in:
+            num = st.number_input("Orden #:", min_value=1)
+            if st.button("Rastrear"):
+                res = session.query(Unidad).filter(Unidad.pedido_id == num).all()
+                for it in res:
+                    st.write(f"📦 {it.modelo} - **{it.etapa}**")
+                    st.progress({"Recibido": 15, "En Proceso": 50, "Terminación": 85, "Despacho": 100}.get(it.etapa, 0))
+
+# --- BLOQUE PRODUCCIÓN ---
+elif menu == "🏭 Producción ISO":
+    st.title("🏭 Panel de Producción ISO")
+    pendientes = session.query(Unidad).filter(Unidad.etapa != "Despacho").all()
     
-    with st.expander(f"📦 Orden #{u.pedido_id:03d} | Item: {u.codigo_xz}{label_prio}"):
-        col_info, col_progreso = st.columns([1, 2])
-        with col_info:
-            st.write(f"**Modelo:** {u.modelo}")
-            if info_prio:
-                st.write(f"**Días en planta:** {info_prio['dias']}")
-            st.write(f"**Última act.:** {u.ultima_actualizacion.strftime('%H:%M:%S')}")
-        
-        with col_progreso:
-            nueva_etapa = st.select_slider(
-                "Cambiar Etapa:",
-                options=["Recibido", "En Proceso", "Terminación", "Despacho"],
-                value=u.etapa,
-                key=f"prod_{u.codigo_xz}"
-            )
-            
-            if st.button(f"📄 Generar PDF #{u.pedido_id:03d}", key=f"pdf_{u.codigo_xz}"):
-                archivo = crear_pdf_cotizacion(u.codigo_xz, u.modelo, u.pedido_id)
-                with open(archivo, "rb") as f:
-                    st.download_button("⬇️ Descargar", f, file_name=archivo, key=f"dl_{u.codigo_xz}")
-
-            if nueva_etapa != u.etapa:
-                u.etapa = nueva_etapa
-                u.ultima_actualizacion = datetime.now()
-                session.commit()
-                st.rerun()
+    col1, col2 = st.columns(2)
+    col1.metric("Órdenes Activas", len(pendientes))
+    
+    for u in pendientes:
+        with st.expander(f"📦 Orden #{u.pedido_id} | {u.codigo_xz}"):
+            nueva = st.select_slider("Etapa:", ["Recibido", "En Proceso", "Terminación", "Despacho"], value=u.etapa, key=f"u_{u.codigo_xz}")
+            if st.button(f"📄 PDF", key=f"pdf_{u.codigo_xz}"):
+                f = crear_pdf_cotizacion(u.codigo_xz, u.modelo, u.pedido_id)
+                with open(f, "rb") as file: st.download_button("Descargar", file, file_name=f)
+            if nueva != u.etapa:
+                u.etapa = nueva; session.commit(); st.rerun()
 
 st.divider()
-st.caption("Grupo I - Normalización y Metrología | Análisis de Criticidad FIFO")
+st.caption("TechArmor RD - Grupo I | Normalización y Metrología")
