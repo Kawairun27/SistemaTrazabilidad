@@ -1,18 +1,19 @@
 import streamlit as st
 import os
 import hashlib
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 from fpdf import FPDF
-from PIL import Image
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="TechArmor RD - Sistema Integrado", layout="wide")
 
 # --- DB SETUP ---
-engine = create_engine('sqlite:///trazabilidad_v2.db')
+engine = create_engine('sqlite:///trazabilidad_v3.db')
 Base = declarative_base()
 
 class Usuario(Base):
@@ -21,203 +22,249 @@ class Usuario(Base):
     email = Column(String, unique=True)
     password = Column(String)
     nombre = Column(String)
+    pedidos = relationship("Pedido", back_populates="usuario")
 
 class Pedido(Base):
     __tablename__ = 'pedidos'
     id = Column(Integer, primary_key=True, autoincrement=True)
     fecha = Column(DateTime, default=datetime.now)
-    usuario_id = Column(Integer)
+    usuario_id = Column(Integer, ForeignKey('usuarios.id'))
+    usuario = relationship("Usuario", back_populates="pedidos")
+    unidades = relationship("Unidad", back_populates="pedido")
 
 class Unidad(Base):
     __tablename__ = 'unidades'
     codigo_xz = Column(String, primary_key=True)
     modelo = Column(String)
     etapa = Column(String)
-    pedido_id = Column(Integer)
+    pedido_id = Column(Integer, ForeignKey('pedidos.id'))
+    pedido = relationship("Pedido", back_populates="unidades")
     ultima_actualizacion = Column(DateTime, default=datetime.now)
 
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 session = Session()
 
+# --- DATOS DE PRODUCTOS ---
+PRODUCTOS_INFO = {
+    "Apex-15 Stealth": {"img": "images/Apex-15Stealth.webp", "precio": 85900},
+    "Titan-18 Ultra": {"img": "images/Titan18Ultra.webp", "precio": 145000},
+    "Horizon-G Pro": {"img": "images/HorizonG-pro.webp", "precio": 95000},
+    "Workstation-X": {"img": "images/WorkstationX.png", "precio": 110000},
+    "GPU-Vortex 90": {"img": "images/GpuVortex.webp", "precio": 62500},
+    "RAM-Fury 64GB": {"img": "images/RAM-Fury-64gb.webp", "precio": 18200}
+}
+
 # --- FUNCIONES DE APOYO ---
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
+def generar_pdf_trazabilidad(unidad):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Encabezado
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(200, 10, "CERTIFICADO DE TRAZABILIDAD - TECHARMOR RD", ln=True, align='C')
+    pdf.ln(10)
+    
+    # Imagen del producto si existe
+    img_path = PRODUCTOS_INFO.get(unidad.modelo, {}).get("img")
+    if img_path and os.path.exists(img_path):
+        try:
+            pdf.image(img_path, x=75, y=30, w=60)
+            pdf.ln(65)
+        except: pass
+
+    pdf.set_font("Arial", size=12)
+    data = [
+        ["ID de Unidad", unidad.codigo_xz],
+        ["Modelo", unidad.modelo],
+        ["Estado Actual", unidad.etapa],
+        ["Orden Asociada", f"#{unidad.pedido_id}"],
+        ["Fecha Emisión", datetime.now().strftime("%d/%m/%Y %H:%M")]
+    ]
+    
+    for row in data:
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(50, 10, row[0] + ":")
+        pdf.set_font("Arial", size=12)
+        pdf.cell(100, 10, row[1], ln=True)
+    
+    pdf.ln(20)
+    pdf.set_font("Arial", 'I', 10)
+    pdf.multi_cell(0, 10, "Este documento certifica que el hardware mencionado ha pasado por los procesos de calidad ISO de TechArmor RD.")
+    
+    return pdf.output(dest='S').encode('latin-1')
+
+def enviar_correo_premium(destinatario, nombre_cliente, id_orden, items):
+    sender_email = "tu_correo@gmail.com"
+    # Lógica de envío simulada mediante st.toast
+    try:
+        st.toast(f"📧 Correo de confirmación enviado a {destinatario}")
+    except: pass
+
 def render_avatar(nombre):
-    """Genera un avatar circular con la inicial y el nombre al lado."""
     inicial = nombre[0].upper() if nombre else "?"
     st.markdown(f"""
         <div style="display: flex; align-items: center; margin-bottom: 20px;">
-            <div style="background-color: #2e7d32; color: white; border-radius: 50%; 
+            <div style="background-color: #1e3a8a; color: white; border-radius: 50%; 
                         width: 50px; height: 50px; display: flex; justify-content: center; 
-                        align-items: center; font-size: 20px; font-weight: bold; margin-right: 15px;">
+                        align-items: center; font-size: 20px; font-weight: bold; margin-right: 15px;
+                        border: 2px solid #3b82f6;">
                 {inicial}
             </div>
-            <div style="font-size: 18px; font-weight: 500;">{nombre}</div>
+            <div>
+                <div style="font-size: 13px; color: #666;">Sesión iniciada como</div>
+                <div style="font-size: 16px; font-weight: bold; color: #1e3a8a;">{nombre}</div>
+            </div>
         </div>
     """, unsafe_allow_html=True)
 
-def crear_pdf_cotizacion(codigo, producto, num_orden):
-    pdf = FPDF()
-    pdf.add_page()
-    INFO = {
-        "Apex-15 Stealth": {"specs": "i7-13700H, RTX 4070, 16GB RAM", "tiempo": "5 días", "img": "images/Apex-15Stealth.webp"},
-        "Titan-18 Ultra": {"specs": "i9-14900HX, RTX 4090, 32GB RAM", "tiempo": "7 días", "img": "images/Titan18Ultra.webp"},
-        "Horizon-G Pro": {"specs": "Ryzen 9, RTX 4080, Liquid Cooling", "tiempo": "6 días", "img": "images/HorizonG-pro.webp"},
-        "Workstation-X": {"specs": "Xeon Gold, 64GB ECC, Quadro RTX", "tiempo": "8 días", "img": "images/WorkstationX.png"},
-        "GPU-Vortex 90": {"specs": "24GB GDDR6X, Triple Fan, DLSS 3.5", "tiempo": "3 días", "img": "images/GpuVortex.webp"},
-        "RAM-Fury 64GB": {"specs": "DDR5 6000MHz, CL30, RGB", "tiempo": "2 días", "img": "images/RAM-Fury-64gb.webp"}
-    }
-    pdf.set_font("Arial", 'B', 20)
-    pdf.set_text_color(40, 70, 120)
-    pdf.cell(200, 15, txt="TECHARMOR RD - HOJA DE TRAZABILIDAD", ln=True, align='C')
-    pdf.set_font("Arial", 'B', 12)
-    pdf.set_text_color(0, 0, 0)
-    pdf.cell(200, 10, txt=f"ORDEN DE PRODUCCIÓN: #{num_orden:03d} | ID: {codigo}", ln=True, align='C')
-    pdf.ln(5)
-    pdf.set_font("Arial", size=11)
-    pdf.cell(100, 10, txt=f"Modelo: {producto}", ln=True)
-    if producto in INFO:
-        pdf.multi_cell(0, 10, txt=f"Especificaciones Técnicas: {INFO[producto]['specs']}")
-        pdf.cell(100, 10, txt=f"Tiempo Estándar de Entrega: {INFO[producto]['tiempo']}", ln=True)
-        pdf.ln(5)
-        ruta_img = INFO[producto]['img']
-        if os.path.exists(ruta_img):
-            if ruta_img.lower().endswith(".webp"):
-                img_temp = Image.open(ruta_img).convert("RGB")
-                img_temp_path = ruta_img.replace(".webp", "_temp.jpg")
-                img_temp.save(img_temp_path, "JPEG")
-                pdf.image(img_temp_path, x=55, y=pdf.get_y(), w=100)
-                os.remove(img_temp_path)
-            else:
-                pdf.image(ruta_img, x=55, y=pdf.get_y(), w=100)
-    pdf.set_y(-40)
-    pdf.set_font("Arial", 'I', 8)
-    pdf.cell(0, 10, txt="Documento generado bajo estándares de Normalización ISO 9001:2015 - Grupo I", align='C', ln=True)
-    nombre_archivo = f"HojaTecnica_{codigo}.pdf"
-    pdf.output(nombre_archivo)
-    return nombre_archivo
-
-# --- LÓGICA DE NAVEGACIÓN ---
+# --- NAVEGACIÓN ---
 query_params = st.query_params
 es_admin = query_params.get("acceso") == "root"
-
-if es_admin:
-    menu = st.sidebar.selectbox("🛡️ MODO ADMINISTRADOR", ["🏭 Producción ISO", "🛒 Vista Tienda"])
-else:
-    menu = "🛒 Vista Tienda"
+menu = st.sidebar.selectbox("🛡️ Menú", ["🛒 Vista Tienda", "🏭 Producción ISO"]) if es_admin else "🛒 Vista Tienda"
 
 # --- BLOQUE TIENDA ---
 if menu == "🛒 Vista Tienda":
+    st.title("🛡️ TechArmor Premium Systems")
+    
     if 'logged_in' not in st.session_state: st.session_state.logged_in = False
     if 'carrito' not in st.session_state: st.session_state.carrito = []
-    if 'user_name' not in st.session_state: st.session_state.user_name = ""
 
     with st.sidebar:
         st.title("👤 Mi Cuenta")
         if not st.session_state.logged_in:
-            opcion_auth = st.radio("Selecciona una opción", ["Iniciar Sesión", "Registrarse"])
-            
-            if opcion_auth == "Iniciar Sesión":
+            auth = st.tabs(["Entrar", "Crear"])
+            with auth[0]:
                 with st.form("login_form"):
-                    l_em = st.text_input("Email")
-                    l_pw = st.text_input("Clave", type="password")
-                    if st.form_submit_button("Entrar"):
-                        u = session.query(Usuario).filter(Usuario.email == l_em, Usuario.password == hash_password(l_pw)).first()
-                        if u:
-                            st.session_state.logged_in = True
-                            st.session_state.user_email = u.email
-                            st.session_state.user_name = u.nombre
-                            st.session_state.user_id = u.id
+                    em = st.text_input("Email")
+                    pw = st.text_input("Clave", type="password")
+                    if st.form_submit_button("Iniciar Sesión"):
+                        user = session.query(Usuario).filter(Usuario.email == em, Usuario.password == hash_password(pw)).first()
+                        if user:
+                            st.session_state.update({"logged_in": True, "user_email": user.email, "user_name": user.nombre, "user_id": user.id})
                             st.rerun()
-                        else:
-                            st.error("Credenciales incorrectas")
-            else:
-                with st.form("reg"):
-                    n_nom, n_em, n_pw = st.text_input("Nombre"), st.text_input("Email"), st.text_input("Clave", type="password")
-                    if st.form_submit_button("Crear Cuenta"):
+                        else: st.error("Email o clave incorrectos")
+            with auth[1]:
+                with st.form("register_form"):
+                    n, e, p = st.text_input("Nombre"), st.text_input("Email"), st.text_input("Clave", type="password")
+                    if st.form_submit_button("Registrar"):
                         try:
-                            nuevo_u = Usuario(nombre=n_nom, email=n_em, password=hash_password(n_pw))
-                            session.add(nuevo_u)
+                            session.add(Usuario(nombre=n, email=e, password=hash_password(p)))
                             session.commit()
-                            st.success("¡Cuenta creada! Ya puedes iniciar sesión.")
-                        except: st.error("El email ya existe.")
+                            st.success("¡Registrado!")
+                        except: st.error("Error en registro.")
         else:
             render_avatar(st.session_state.user_name)
             if st.button("Cerrar Sesión"):
                 st.session_state.logged_in = False
                 st.rerun()
 
-    st.title("🛡️ TechArmor Premium Systems")
-    tab1, tab2 = st.tabs(["🛒 Catálogo", "🔍 Rastrear Pedido"])
-
-    with tab1:
-        PRODUCTOS_INFO = {
-            "Apex-15 Stealth": {"img": "images/Apex-15Stealth.webp", "precio": 85900},
-            "Titan-18 Ultra": {"img": "images/Titan18Ultra.webp", "precio": 145000},
-            "Horizon-G Pro": {"img": "images/HorizonG-pro.webp", "precio": 95000},
-            "Workstation-X": {"img": "images/WorkstationX.png", "precio": 110000},
-            "GPU-Vortex 90": {"img": "images/GpuVortex.webp", "precio": 62500},
-            "RAM-Fury 64GB": {"img": "images/RAM-Fury-64gb.webp", "precio": 18200}
-        }
-        col_p, col_c = st.columns([3, 1])
-        with col_p:
+    t1, t2 = st.tabs(["🛒 Catálogo Tech", "🔍 Rastrear Pedido"])
+    
+    with t1:
+        col_prod, col_cart = st.columns([3, 1])
+        with col_prod:
             p_items = list(PRODUCTOS_INFO.items())
             for i in range(0, len(p_items), 2):
-                cols = st.columns(2)
+                row = st.columns(2)
                 for j in range(2):
-                    if i+j < len(p_items):
-                        name, info = p_items[i+j]
-                        with cols[j]:
+                    if i + j < len(p_items):
+                        name, info = p_items[i + j]
+                        with row[j]:
                             if os.path.exists(info["img"]): st.image(info["img"], use_container_width=True)
                             st.subheader(name)
-                            if st.button(f"Añadir RD${info['precio']:,}", key=f"b_{name}"):
-                                st.session_state.carrito.append(name); st.toast(f"✅ {name}")
-        with col_c:
-            st.subheader("Carrito")
+                            st.write(f"**Precio: RD${info['precio']:,}**")
+                            if st.button(f"🛒 Añadir", key=f"btn_{name}"):
+                                st.session_state.carrito.append(name)
+                                st.toast(f"✅ {name} añadido")
+        with col_cart:
+            st.subheader("Tu Carrito")
             for item in st.session_state.carrito: st.write(f"- {item}")
             if st.session_state.carrito and st.button("🚀 Pagar ahora"):
-                if not st.session_state.logged_in: 
-                    st.warning("⚠️ Debes iniciar sesión para comprar.")
+                if not st.session_state.logged_in: st.warning("Inicia sesión")
                 else:
                     ped = Pedido(usuario_id=st.session_state.user_id)
                     session.add(ped); session.commit()
-                    for p in st.session_state.carrito:
-                        id_u = f"XZ-{p[:2].upper()}-{datetime.now().strftime('%M%S')}"
-                        session.add(Unidad(codigo_xz=id_u, modelo=p, etapa="Recibido", pedido_id=ped.id))
-                    session.commit(); st.session_state.carrito = []; st.success(f"¡Orden #{ped.id} creada!"); st.balloons()
+                    for it in st.session_state.carrito:
+                        cod = f"XZ-{it[:2].upper()}-{datetime.now().strftime('%M%S')}"
+                        session.add(Unidad(codigo_xz=cod, modelo=it, etapa="Recibido", pedido_id=ped.id))
+                    session.commit()
+                    enviar_correo_premium(st.session_state.user_email, st.session_state.user_name, ped.id, st.session_state.carrito)
+                    st.session_state.carrito = []; st.success(f"Orden #{ped.id} creada"); st.balloons()
 
-    with tab2:
-        st.subheader("Rastreo de Unidades")
-        num = st.number_input("Introduce tu número de Orden:", min_value=1, step=1)
-        if st.button("Buscar Estado"):
-            res = session.query(Unidad).filter(Unidad.pedido_id == num).all()
-            if res:
-                for it in res:
+    with t2:
+        st.subheader("🔍 Rastreo Automático")
+        num_ord = st.number_input("Número de Orden:", min_value=0, step=1)
+        if num_ord > 0:
+            unidades = session.query(Unidad).filter(Unidad.pedido_id == num_ord).all()
+            if unidades:
+                for u in unidades:
                     with st.container(border=True):
-                        st.write(f"📦 **Modelo:** {it.modelo} | **ID:** {it.codigo_xz}")
-                        progreso = {"Recibido": 15, "En Proceso": 50, "Terminación": 85, "Despacho": 100}.get(it.etapa, 0)
-                        st.progress(progreso)
-                        st.caption(f"Estado actual: {it.etapa}")
-            else:
-                st.error("No se encontró ninguna orden con ese número.")
+                        st.write(f"📦 **{u.modelo}** | ID: `{u.codigo_xz}`")
+                        st.progress({"Recibido": 15, "En Proceso": 50, "Terminación": 85, "Despacho": 100}.get(u.etapa, 0))
+                        st.caption(f"Etapa: {u.etapa}")
+            else: st.error("No encontrado.")
 
 # --- BLOQUE PRODUCCIÓN ---
 elif menu == "🏭 Producción ISO":
-    st.title("🏭 Panel de Producción ISO")
-    pendientes = session.query(Unidad).filter(Unidad.etapa != "Despacho").all()
-    col1, col2 = st.columns(2)
-    col1.metric("Órdenes Activas", len(pendientes))
+    st.title("🏭 Centro de Trazabilidad Industrial")
+    todas = session.query(Unidad).join(Pedido).join(Usuario).all()
+    pend = [u for u in todas if u.etapa != "Despacho"]
+    comp = [u for u in todas if u.etapa == "Despacho"]
+
+    tp, tc = st.tabs([f"🕒 Pendientes ({len(pend)})", f"✅ Completadas ({len(comp)})"])
     
-    for u in pendientes:
-        with st.expander(f"📦 Orden #{u.pedido_id} | {u.codigo_xz}"):
-            nueva = st.select_slider("Etapa:", ["Recibido", "En Proceso", "Terminación", "Despacho"], value=u.etapa, key=f"u_{u.codigo_xz}")
-            if st.button(f"📄 Generar Hoja Técnica", key=f"pdf_{u.codigo_xz}"):
-                f = crear_pdf_cotizacion(u.codigo_xz, u.modelo, u.pedido_id)
-                with open(f, "rb") as file: st.download_button("Descargar PDF", file, file_name=f)
-            if nueva != u.etapa:
-                u.etapa = nueva; session.commit(); st.rerun()
+    with tp:
+        if not pend:
+            st.info("No hay órdenes pendientes en línea de producción.")
+        for u in pend:
+            icon = "🔴" if u.etapa == "Recibido" else "🟡"
+            with st.expander(f"{icon} Orden #{u.pedido_id} | Cliente: {u.pedido.usuario.nombre}"):
+                st.write(f"**Email:** {u.pedido.usuario.email} | **Modelo:** {u.modelo}")
+                
+                # --- NUEVA UBICACIÓN DEL BOTÓN PDF ---
+                pdf_data = generar_pdf_trazabilidad(u)
+                st.download_button(
+                    label=f"📄 Generar Certificado Parcial {u.codigo_xz}", 
+                    data=pdf_data, 
+                    file_name=f"TechArmor_PEND_{u.codigo_xz}.pdf", 
+                    mime="application/pdf",
+                    key=f"dl_pend_{u.codigo_xz}" # Key única para pendientes
+                )
+                
+                st.divider()
+                
+                nueva = st.select_slider(
+                    "Actualizar Etapa de Producción:", 
+                    ["Recibido", "En Proceso", "Terminación", "Despacho"], 
+                    value=u.etapa, 
+                    key=f"prod_{u.codigo_xz}"
+                )
+                
+                if nueva != u.etapa:
+                    u.etapa = nueva
+                    session.commit()
+                    st.rerun()
+                    
+    with tc:
+        if not comp:
+            st.info("Aún no hay órdenes finalizadas.")
+        for u in comp:
+            with st.container(border=True):
+                st.success(f"✔️ Orden #{u.pedido_id} - {u.modelo} (Cliente: {u.pedido.usuario.nombre})")
+                
+                # Mantenemos el botón aquí también por si se necesita una copia final
+                pdf_data = generar_pdf_trazabilidad(u)
+                st.download_button(
+                    label=f"📄 Descargar Certificado Final {u.codigo_xz}", 
+                    data=pdf_data, 
+                    file_name=f"TechArmor_FINAL_{u.codigo_xz}.pdf", 
+                    mime="application/pdf",
+                    key=f"dl_comp_{u.codigo_xz}"
+                )
 
 st.divider()
-st.caption("TechArmor RD - Grupo I | Normalización y Metrología")
+st.caption("TechArmor RD - Grupo I | Calidad Certificada")
