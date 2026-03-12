@@ -8,7 +8,7 @@ from datetime import datetime
 from fpdf import FPDF
 from PIL import Image
 
-# --- CONFIGURACIÓN DE PÁGINA (DEBE SER LO PRIMERO) ---
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="TechArmor RD - Sistema Integrado", layout="wide")
 
 # --- DB SETUP ---
@@ -43,6 +43,20 @@ session = Session()
 # --- FUNCIONES DE APOYO ---
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
+
+def render_avatar(nombre):
+    """Genera un avatar circular con la inicial y el nombre al lado."""
+    inicial = nombre[0].upper() if nombre else "?"
+    st.markdown(f"""
+        <div style="display: flex; align-items: center; margin-bottom: 20px;">
+            <div style="background-color: #2e7d32; color: white; border-radius: 50%; 
+                        width: 50px; height: 50px; display: flex; justify-content: center; 
+                        align-items: center; font-size: 20px; font-weight: bold; margin-right: 15px;">
+                {inicial}
+            </div>
+            <div style="font-size: 18px; font-weight: 500;">{nombre}</div>
+        </div>
+    """, unsafe_allow_html=True)
 
 def crear_pdf_cotizacion(codigo, producto, num_orden):
     pdf = FPDF()
@@ -85,7 +99,7 @@ def crear_pdf_cotizacion(codigo, producto, num_orden):
     pdf.output(nombre_archivo)
     return nombre_archivo
 
-# --- LÓGICA DE NAVEGACIÓN SECRETA ---
+# --- LÓGICA DE NAVEGACIÓN ---
 query_params = st.query_params
 es_admin = query_params.get("acceso") == "root"
 
@@ -98,25 +112,45 @@ else:
 if menu == "🛒 Vista Tienda":
     if 'logged_in' not in st.session_state: st.session_state.logged_in = False
     if 'carrito' not in st.session_state: st.session_state.carrito = []
+    if 'user_name' not in st.session_state: st.session_state.user_name = ""
 
     with st.sidebar:
         st.title("👤 Mi Cuenta")
         if not st.session_state.logged_in:
-            with st.expander("📝 Registrarse"):
+            opcion_auth = st.radio("Selecciona una opción", ["Iniciar Sesión", "Registrarse"])
+            
+            if opcion_auth == "Iniciar Sesión":
+                with st.form("login_form"):
+                    l_em = st.text_input("Email")
+                    l_pw = st.text_input("Clave", type="password")
+                    if st.form_submit_button("Entrar"):
+                        u = session.query(Usuario).filter(Usuario.email == l_em, Usuario.password == hash_password(l_pw)).first()
+                        if u:
+                            st.session_state.logged_in = True
+                            st.session_state.user_email = u.email
+                            st.session_state.user_name = u.nombre
+                            st.session_state.user_id = u.id
+                            st.rerun()
+                        else:
+                            st.error("Credenciales incorrectas")
+            else:
                 with st.form("reg"):
                     n_nom, n_em, n_pw = st.text_input("Nombre"), st.text_input("Email"), st.text_input("Clave", type="password")
                     if st.form_submit_button("Crear Cuenta"):
                         try:
-                            session.add(Usuario(nombre=n_nom, email=n_em, password=hash_password(n_pw)))
-                            session.commit(); st.success("¡Listo!")
-                        except: st.error("Error")
+                            nuevo_u = Usuario(nombre=n_nom, email=n_em, password=hash_password(n_pw))
+                            session.add(nuevo_u)
+                            session.commit()
+                            st.success("¡Cuenta creada! Ya puedes iniciar sesión.")
+                        except: st.error("El email ya existe.")
         else:
-            st.success(f"Hola, {st.session_state.user_email}")
+            render_avatar(st.session_state.user_name)
             if st.button("Cerrar Sesión"):
-                st.session_state.logged_in = False; st.rerun()
+                st.session_state.logged_in = False
+                st.rerun()
 
     st.title("🛡️ TechArmor Premium Systems")
-    tab1, tab2 = st.tabs(["🛒 Catálogo", "🔍 Mis Órdenes"])
+    tab1, tab2 = st.tabs(["🛒 Catálogo", "🔍 Rastrear Pedido"])
 
     with tab1:
         PRODUCTOS_INFO = {
@@ -144,38 +178,44 @@ if menu == "🛒 Vista Tienda":
             st.subheader("Carrito")
             for item in st.session_state.carrito: st.write(f"- {item}")
             if st.session_state.carrito and st.button("🚀 Pagar ahora"):
-                if not st.session_state.logged_in: st.warning("Inicia sesión primero")
+                if not st.session_state.logged_in: 
+                    st.warning("⚠️ Debes iniciar sesión para comprar.")
                 else:
                     ped = Pedido(usuario_id=st.session_state.user_id)
                     session.add(ped); session.commit()
                     for p in st.session_state.carrito:
                         id_u = f"XZ-{p[:2].upper()}-{datetime.now().strftime('%M%S')}"
                         session.add(Unidad(codigo_xz=id_u, modelo=p, etapa="Recibido", pedido_id=ped.id))
-                    session.commit(); st.session_state.carrito = []; st.success("¡Éxito!"); st.balloons()
+                    session.commit(); st.session_state.carrito = []; st.success(f"¡Orden #{ped.id} creada!"); st.balloons()
 
     with tab2:
-        if st.session_state.logged_in:
-            num = st.number_input("Orden #:", min_value=1)
-            if st.button("Rastrear"):
-                res = session.query(Unidad).filter(Unidad.pedido_id == num).all()
+        st.subheader("Rastreo de Unidades")
+        num = st.number_input("Introduce tu número de Orden:", min_value=1, step=1)
+        if st.button("Buscar Estado"):
+            res = session.query(Unidad).filter(Unidad.pedido_id == num).all()
+            if res:
                 for it in res:
-                    st.write(f"📦 {it.modelo} - **{it.etapa}**")
-                    st.progress({"Recibido": 15, "En Proceso": 50, "Terminación": 85, "Despacho": 100}.get(it.etapa, 0))
+                    with st.container(border=True):
+                        st.write(f"📦 **Modelo:** {it.modelo} | **ID:** {it.codigo_xz}")
+                        progreso = {"Recibido": 15, "En Proceso": 50, "Terminación": 85, "Despacho": 100}.get(it.etapa, 0)
+                        st.progress(progreso)
+                        st.caption(f"Estado actual: {it.etapa}")
+            else:
+                st.error("No se encontró ninguna orden con ese número.")
 
 # --- BLOQUE PRODUCCIÓN ---
 elif menu == "🏭 Producción ISO":
     st.title("🏭 Panel de Producción ISO")
     pendientes = session.query(Unidad).filter(Unidad.etapa != "Despacho").all()
-    
     col1, col2 = st.columns(2)
     col1.metric("Órdenes Activas", len(pendientes))
     
     for u in pendientes:
         with st.expander(f"📦 Orden #{u.pedido_id} | {u.codigo_xz}"):
             nueva = st.select_slider("Etapa:", ["Recibido", "En Proceso", "Terminación", "Despacho"], value=u.etapa, key=f"u_{u.codigo_xz}")
-            if st.button(f"📄 PDF", key=f"pdf_{u.codigo_xz}"):
+            if st.button(f"📄 Generar Hoja Técnica", key=f"pdf_{u.codigo_xz}"):
                 f = crear_pdf_cotizacion(u.codigo_xz, u.modelo, u.pedido_id)
-                with open(f, "rb") as file: st.download_button("Descargar", file, file_name=f)
+                with open(f, "rb") as file: st.download_button("Descargar PDF", file, file_name=f)
             if nueva != u.etapa:
                 u.etapa = nueva; session.commit(); st.rerun()
 
